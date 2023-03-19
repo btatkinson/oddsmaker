@@ -4,13 +4,13 @@ from setuptools import setup, find_packages
 HERE = pathlib.Path(__file__).parent
 
 VERSION = '0.1.0'
-PACKAGE_NAME = 'moneyball'
+PACKAGE_NAME = 'oddsmaker'
 AUTHOR = 'Blake Atkinson'
 AUTHOR_EMAIL = 'blaketatkinson@gmail.com'
 URL = 'https://github.com/btatkinson/moneyball'
 
 LICENSE = 'MIT License'
-DESCRIPTION = 'Speedy Implementation of Rating Algorithms'
+DESCRIPTION = 'Speedy Implementation of Team and Player Rating Algorithms'
 LONG_DESCRIPTION = (HERE / "README.md").read_text()
 LONG_DESC_TYPE = "text/markdown"
 
