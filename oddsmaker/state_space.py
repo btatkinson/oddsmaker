@@ -22,19 +22,24 @@ class Elo():
     def __init__(self, 
                  data, 
                  k,
-                 hfa,
+                 hfa=None,
                  protag_id='team_name', 
                  antag_id='opp_name',
                  result_col='result',
                  priors = None
                 ):
         
-        self.data = data
+        self.data = data.copy()
         self.protag_id = protag_id
         self.antag_id = antag_id
-        assert('stat' in list(self.data)), 'No stat column'
+
+        assert(self.protag_id in list(data)), f"{self.protag_id} not in columns, feel free to specify team column name with protag_id argument"
+        assert(self.antag_id in list(data)), f"{self.antag_id} not in columns, feel free to specify opponent column name with antag_id argument"
+
+        assert('stat' in list(self.data)), 'No stat column, please add a stat name column to your data '
         self.stats = sorted(list(self.data.stat.unique()))
         self.result_col = result_col
+        assert(self.result_col in list(self.data)), 'Please include an outcome/result column, can specify the name with result col argument'
         self.priors = priors
         
         ### determine format of provided k values
@@ -57,7 +62,11 @@ class Elo():
             raise ValueError("K values must either be a numeric (to assign to all stats) or a dict (where keys are stat names, values to be applied individually)")
         
         ### determine format of provided home field advantages
-        if type(hfa)==dict:
+        if ((hfa is None)|(hfa==0)):
+            self.hfa = {}
+            for stat in self.stats:
+                self.hfa[stat] = 0
+        elif type(hfa)==dict:
             assert(key in self.stats for key in hfa.keys()), "each key in home field advantage dict must be a stat"
             hfa_not_provided = []
             for stat in self.stats:
@@ -119,10 +128,10 @@ class Elo():
             self.stat2index[stat] = j
             
         ### initialize ratings
-        self.data['protag_idx'] = self.data[self.protag_id].map(self.protag2index)
-        self.data['antag_idx'] = self.data[self.antag_id].map(self.protag2index)
-        self.data['stat_idx'] = self.data['stat'].map(self.stat2index)
-        self.data['hfa'] = self.data['stat'].map(self.hfa).copy()*self.data['is_home'].copy()
+        self.data['protag_idx'] = self.data[self.protag_id].copy().map(self.protag2index)
+        self.data['antag_idx'] = self.data[self.antag_id].copy().map(self.protag2index)
+        self.data['stat_idx'] = self.data['stat'].copy().map(self.stat2index)
+        self.data['hfa'] = self.data['stat'].copy().map(self.hfa).copy()*self.data['is_home'].copy()
         assert(len(self.data.loc[self.data.hfa.isnull()])==0), f"{self.data.loc[self.data.hfa.is_null()].stat.unique()} do not have a home field advantage number"
         
         self.data['k'] = self.data['stat'].map(self.k).copy()
@@ -175,12 +184,20 @@ class Elo():
         """
         self.rating_matrix = np.ones((self.num_protags, self.num_stats))*1500
         old_ratings = old_data.drop_duplicates(subset=['protag_idx','stat_idx'], keep='last').copy()
+        # print(list(old_ratings))
+        # print(list(self.history))
+        past_ratings = self.history[['rating_period',self.protag_id,'stat','pregame_rating','rating_adjustment']].copy()
+        past_ratings['protag_idx'] = past_ratings[self.protag_id].map(self.protag2index)
+        past_ratings['stat_idx'] = past_ratings['stat'].map(self.stat2index)
+
+        old_ratings = old_ratings.merge(past_ratings[['protag_idx','stat_idx','rating_period','pregame_rating','rating_adjustment']], on=['protag_idx','stat_idx','rating_period'], how='left')
         for i,row in old_ratings.iterrows():
             self.rating_matrix[row['protag_idx'], row['stat_idx']] = row['pregame_rating'] + row['rating_adjustment']
-
-        for key, value in priors.items():
-            for stat, rating in value.items():
-                self.rating_matrix[self.protag2index[key], self.stat2index[stat]] = rating
+        if priors is not None:
+            assert(type(priors)==dict), "priors must be a dictionary"
+            for key, value in priors.items():
+                for stat, rating in value.items():
+                    self.rating_matrix[self.protag2index[key], self.stat2index[stat]] = rating
 
         ### reset history
         if 'date' in list(old_data):
@@ -240,10 +257,10 @@ class Elo():
         })
         self.idx2protag = {v:k for k,v in self.protag2index.items()}
         self.idx2stat = {v:k for k,v in self.stat2index.items()}
-        ratings['protag_id'] = ratings['protag_idx'].map(self.idx2protag)
+        ratings[self.protag_id] = ratings['protag_idx'].map(self.idx2protag)
         ratings['stat'] = ratings['stat_idx'].map(self.idx2stat)
         
-        return ratings
+        return ratings.drop(columns=['protag_idx','stat_idx'])
     
     def run_history(self, data=None, k=None, hfa=None, metric='brier'):
         """
@@ -268,7 +285,7 @@ class Elo():
             pregame_protag_ratings = self.rating_matrix[rating_period.protag_idx.values, rating_period.stat_idx.values]
             pregame_antag_ratings = self.rating_matrix[rating_period.antag_idx.values, rating_period.stat_idx.values]
 
-            to_append = rating_period[['date',self.protag_id,self.antag_id,'is_home','hfa','stat',self.result_col]].copy()
+            to_append = rating_period[['date','rating_period',self.protag_id,self.antag_id,'is_home','hfa','stat',self.result_col]].copy()
             to_append['pregame_rating'] = pregame_protag_ratings
             to_append['pregame_opp_rating'] = pregame_antag_ratings
             
@@ -276,7 +293,7 @@ class Elo():
             pregame_protag_ratings = pregame_protag_ratings+(rating_period.hfa.values/2)
             pregame_antag_ratings = pregame_antag_ratings-(rating_period.hfa.values/2)
 
-            rating_adjustments = self._rating_period_update(pregame_protag_ratings, pregame_antag_ratings, rating_period.k.values, rating_period.result.values)
+            rating_adjustments = self._rating_period_update(pregame_protag_ratings, pregame_antag_ratings, rating_period.k.values, rating_period[self.result_col].values)
             
             ## reset ratings
             pregame_protag_ratings = pregame_protag_ratings-(rating_period.hfa.values/2)
@@ -284,7 +301,7 @@ class Elo():
 
             ## apply update
             new_ratings = pregame_protag_ratings+rating_adjustments
-            to_append['rating_adjustments'] = rating_adjustments
+            to_append['rating_adjustment'] = rating_adjustments
             
             history.append(to_append)
             
@@ -300,7 +317,7 @@ class Elo():
         if metric == 'brier':
             ## allow some time for ratings to stabilize
             initial = int(0.15*len(self.history))
-            score = ((self.history[initial:]['result'].copy()-self.history[initial:]['probability'].copy())**2).mean()
+            score = ((self.history[initial:][self.result_col].copy()-self.history[initial:]['probability'].copy())**2).mean()
         self.history = self.history.drop(columns=['rtg_diff'])
         
         return self.history, score
@@ -368,9 +385,12 @@ class Elo():
             self._update_rating_matrix(new_ids, priors)
         return
     
-    def update(self, new_data, affirm_update=True, priors=None):
+    def update(self, new_data, affirm_update=False, priors=None):
 
-
+        if type(self.history) == str:
+            print("Please use run_history() function before updating with new data. Consider combining new and old data and running all at once.")
+            return
+        
         ### check that no new stats have been added
         new_stats = set(new_data.stat.unique())
         old_stats = set(self.stats)
@@ -383,7 +403,7 @@ class Elo():
             date_dtype = new_data.date.dtype
             assert(is_datetime(date_dtype)), "Date column must be of type datetime"
             oldest_date = new_data.date.min()
-            assert('date' in list(self.date)), "Old data does not contain date column, new data does. Confused whether to use rating period or date."
+            assert('date' in list(self.data)), "Old data does not contain date column, new data does. Confused whether to use rating period or date."
             print(f"Oldest date in new data is {oldest_date}, starting update from that date...")
 
             if affirm_update:

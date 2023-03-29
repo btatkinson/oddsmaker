@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# scratch pad
+notebooks/temp_and_scratch.ipynb
+
 # C extensions
 *.so
 

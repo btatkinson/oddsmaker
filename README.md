@@ -7,13 +7,21 @@ The problem that this package sets out to address is that a lot of publicly avai
 
 The goal of this package is to be able to quickly test and apply many of these rating options to data of a generic structure. For more explanation, check out the Quick Start and Documentation. 
 
-## Implemented Algorithms
+## Implemented Algorithms (v 0.1.0)
 
-### State Space  
+#### State Space  
 1. Classic Elo
 2. Elo with Uncertainty
-3. Elo with Scoring Margin
-4. Many more (hopefully) coming
+
+#### Linear
+1. Ridge
+2. KenPom
+3. Massey
+
+#### Graph
+1. Pagerank
+
+Many more (hopefully) coming!
 
 ## Installation
 
