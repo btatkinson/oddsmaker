@@ -1,3 +1,6 @@
+
+![Oddsmaker](images/oddsmaker.jpg)
+
 # oddsmaker
 Package that implements common ratings systems that are applicable to a wide range of sports and data types.
 

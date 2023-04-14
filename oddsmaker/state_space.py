@@ -150,6 +150,10 @@ class Elo():
             if 'is_home' not in list(self.data):
                 ### if no home field advantage column, assume no home field advantage
                 self.data['is_home']=0
+                self.has_hfa = False
+            else:
+                self.has_hfa = True
+
             locs = (self.data['is_home'].unique())
             assert(all([(np.isclose(l,0)|(np.isclose(l,1)|(np.isclose(l,-1)))) for l in locs])), "is_home col needs either 1 for home, -1 for away, or 0 for neutral"
             
@@ -250,7 +254,10 @@ class Elo():
                 key_name = copy(key).replace('_kval','')
                 k[key_name] = value
             
-        _, grade = self.run_history(k=k, hfa=hfa)
+        if self.has_hfa:
+            _, grade = self.run_history(k=k, hfa=hfa)
+        else:
+            _, grade = self.run_history(k=k)
         return -grade # optimizer maximizes, so need to take negative
     
     def _rating_period_update(self, protag_ratings, antag_ratings, k, results):
@@ -332,7 +339,10 @@ class Elo():
         
         print(f"There are {self.num_stats} stats: {self.stats}")
         print(f"There are {self.num_protags:,} unique players/teams.")
-        print(f"There are {self.num_games:,} games from {self.data.date.min()} to {self.data.date.max()}.")
+        if 'date' in self.data.columns:
+            print(f"There are {self.num_games:,} games from {self.data.date.min()} to {self.data.date.max()}.")
+        else:
+            print(f"There are {self.num_games:,} games over {self.data.rating_period.max()-self.data.rating_period.min()} rating periods.")
         
         return
     
@@ -419,8 +429,8 @@ class Elo():
     
     
     def optimize(self, 
-                 init_points=20, 
-                 n_iter=250, 
+                 init_points=10, 
+                 n_iter=50, 
                  k_lower=5, 
                  k_upper=25, 
                  hfa_lower=0, 
@@ -434,7 +444,8 @@ class Elo():
         
         pbounds = {}
         for stat in self.stats:
-            pbounds[stat+'_hfa'] = (hfa_lower, hfa_upper)
+            if self.has_hfa:
+                pbounds[stat+'_hfa'] = (hfa_lower, hfa_upper)
             pbounds[stat+'_kval'] = (k_lower, k_upper)
             
         self.optimizer = BayesianOptimization(
@@ -455,7 +466,8 @@ class Elo():
         if update_params:
             print("Updating params to optimized values...")
             self.k = {}
-            self.hfa = {}
+            if self.has_hfa:
+                self.hfa = {}
             for param, value in self.optimizer.max['params'].items():
                 if '_hfa' in param:
                     stat_name = param.replace('_hfa','')
