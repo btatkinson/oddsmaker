@@ -15,6 +15,30 @@ class Elo():
     """
     
     Implements classic Elo algorithm for a single stat or multiple stats simultaneously
+
+    Parameters
+    ----------
+    data : pandas dataframe
+        Dataframe containing the following columns:
+            - protag_id: id of protagonist (player or team)
+            - antag_id: id of antagonist (player or team)
+            - stat: name of stat
+            - result: 0 for loss, 1 for win, 0.5 for tie
+            - is_home: 1 for home, -1 for away, 0 for neutral
+            - date: date of game
+            - rating_period: rating period of game (if no date)
+    k : int, float, or dict
+        Elo k value(s) to use for each stat. If int or float, applies to all stats. If dict, keys must be stat names, values are k values for each stat
+    hfa : int, float, or dict
+        Home field advantage value(s) to use for each stat. If int or float, applies to all stats. If dict, keys must be stat names, values are hfa values for each stat
+    protag_id : str, optional
+        Name of protagonist id column in data. The default is 'team_name'.
+    antag_id : str, optional
+        Name of antagonist id column in data. The default is 'opp_name'.
+    result_col : str, optional
+        Name of result column in data. The default is 'result'.
+    priors : dict, optional
+        Dictionary of prior ratings to use for each stat. Keys are protag_ids, values are dicts of stat:rating pairs. The default is None.      
     
     """
     
@@ -83,19 +107,25 @@ class Elo():
         self.data['hfa'] = self.data['stat'].copy().map(self.hfa).copy()*self.data['is_home'].copy()
         assert(len(self.data.loc[self.data.hfa.isnull()])==0), f"{self.data.loc[self.data.hfa.is_null()].stat.unique()} do not have a home field advantage number"
         
-        self.rating_matrix = np.ones((self.num_protags, self.num_stats))*1500
         self.history = "Use .run_history() to create history"
+        
+        self.reset_ratings_mat()
+
+        return
+    
+    def reset_ratings_mat(self):
+
+        self.rating_matrix = np.ones((self.num_protags, self.num_stats))*1500
         
         ### add priors for those specified
         ### priors must be a dict in form of {protag_id:{stat:rating}}
-        if priors is not None:
-            assert(type(priors)==dict), "Priors must be a dict"
-            for protag_id, stat_dict in priors.items():
+        if self.priors is not None:
+            assert(type(self.priors)==dict), "Priors must be a dict"
+            for protag_id, stat_dict in self.priors.items():
                 assert(type(stat_dict)==dict), "Each protag_id key in priors dict must be a dict of stat:rating pairs"
                 for stat, rating in stat_dict.items():
                     assert(stat in self.stats), f"{stat} is not a stat in the dataset"
                     self.rating_matrix[self.protag2index[protag_id], self.stat2index[stat]] = rating
-
         return
     
     def _add_k(self, k=None, data=None):
@@ -365,7 +395,7 @@ class Elo():
         
         return ratings.drop(columns=['protag_idx','stat_idx'])
     
-    def run_history(self, data=None, k=None, hfa=None, metric='brier'):
+    def run_history(self, data=None, k=None, hfa=None, metric='brier', is_update=False):
         """
         calculates entire pre-game (non-leaky) ratings using current parameters
         
@@ -373,17 +403,41 @@ class Elo():
         """
         
         assert(metric in ['brier','log_loss']), 'please use an implemented metric (brier, log_loss)' 
-        if k is None:
-            k = self.k
-        if hfa is None:
-            hfa = self.hfa
+
         if data is None:
             data = self.data.copy()
+
+        if hfa is None:
+            hfa = self.hfa
+        elif type(hfa)==dict:
+            data['hfa'] = data['stat'].map(hfa).copy()
+        elif type(hfa)==int:
+            data['hfa'] = hfa
+        else:
+            raise ValueError("hfa must be a dictionary or an integer")
+
+        if k is None:
+            k = self.k
+        elif type(k)==dict:
+            data['k'] = data['stat'].map(k).copy()
+        elif type(k)==int:
+            data['k'] = k
+        else:
+            raise ValueError("k must be a dictionary or an integer")
         
+        if is_update:
+            if data is None:
+                raise ValueError("If is_update=True, data must be provided.")
+        else:
+            self.reset_ratings_mat()
+
         history = []
         quick_iterator = data.groupby(['rating_period'])
         for rp_index, rating_period in tqdm(quick_iterator, total=len(quick_iterator)):
             
+            # if rp_index == 1:
+            #     print(rating_period)
+
             ## append pregame ratings to history
             pregame_protag_ratings = self.rating_matrix[rating_period.protag_idx.values, rating_period.stat_idx.values]
             pregame_antag_ratings = self.rating_matrix[rating_period.antag_idx.values, rating_period.stat_idx.values]
@@ -412,7 +466,7 @@ class Elo():
             
             self.rating_matrix[rating_period.protag_idx.values, rating_period.stat_idx.values] = new_ratings
 
-        if type(self.history) == pd.DataFrame:
+        if is_update:
             self.history = pd.concat([self.history, pd.concat(history, axis=0).reset_index(drop=True)], axis=0).reset_index(drop=True)
         else:
             self.history = pd.concat(history, axis=0).reset_index(drop=True)
@@ -422,9 +476,10 @@ class Elo():
         if metric == 'brier':
             ## allow some time for ratings to stabilize
             initial = int(0.15*len(self.history))
+
             score = ((self.history[initial:][self.result_col].copy()-self.history[initial:]['probability'].copy())**2).mean()
         self.history = self.history.drop(columns=['rtg_diff'])
-        
+
         return self.history, score
     
     
@@ -561,7 +616,7 @@ class Elo():
         ### reset ratings matrix to prior to new data
         self._reset_ratings(old_data, priors)
         ### update ratings
-        self.run_history(data=new_data)
+        self.run_history(data=new_data, is_update=True)
 
         return
     
