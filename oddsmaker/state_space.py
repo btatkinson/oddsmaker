@@ -24,9 +24,9 @@ class Elo():
             - antag_id: id of antagonist (player or team)
             - stat: name of stat
             - result: 0 for loss, 1 for win, 0.5 for tie
-            - is_home: 1 for home, -1 for away, 0 for neutral
+            - is_home (optional): 1 for home, -1 for away, 0 for neutral
             - date: date of game
-            - rating_period: rating period of game (if no date)
+            - rating_period (if no date): rating period of game 
     k : int, float, or dict
         Elo k value(s) to use for each stat. If int or float, applies to all stats. If dict, keys must be stat names, values are k values for each stat
     hfa : int, float, or dict
@@ -57,10 +57,10 @@ class Elo():
         self.protag_id = protag_id
         self.antag_id = antag_id
 
-        assert(self.protag_id in list(data)), f"{self.protag_id} not in columns, feel free to specify team column name with protag_id argument"
-        assert(self.antag_id in list(data)), f"{self.antag_id} not in columns, feel free to specify opponent column name with antag_id argument"
+        assert(self.protag_id in list(data)), f"{self.protag_id} not in columns, please specify team column name with protag_id argument"
+        assert(self.antag_id in list(data)), f"{self.antag_id} not in columns, please specify opponent column name with antag_id argument"
 
-        assert('stat' in list(self.data)), 'No stat column, please add a stat name column to your data '
+        assert('stat' in list(self.data)), 'No stat column, please add a stat name column to your data'
         self.stats = sorted(list(self.data.stat.unique()))
         self.result_col = result_col
         assert(self.result_col in list(self.data)), 'Please include an outcome/result column, can specify the name with result col argument'
@@ -132,29 +132,29 @@ class Elo():
 
         """
         
-        Adds k to self.data if none is passed, otherwise adds hfa to passed data
+        Adds k to self.data if none is passed, otherwise adds k to passed data
         
         """
         
-        if self.k is None:
-            ### determine format of provided k values
-            if type(k)==dict:
-                assert(key in self.stats for key in k.keys()), "each key in k value dict must be a stat"
-                kval_not_provided = []
-                for stat in self.stats:
-                    if stat not in k:
-                        print(f"No k value provided for {stat}, using average of other kvalues...")
-                        kval_not_provided.append(stat)
-                self.k = k
-                for stat in kval_not_provided:
-                    self.k[stat] = np.mean(self.k.values())
-                    
-            elif ((isinstance(k, int))|(isinstance(k, float))):
-                self.k = {}
-                for stat in self.stats:
-                    self.k[stat] = k
-            else:
-                raise ValueError("K values must either be a numeric (to assign to all stats) or a dict (where keys are stat names, values to be applied individually)")
+        ### determine format of provided k values
+        if type(k)==dict:
+            assert(key in self.stats for key in k.keys()), "each key in k value dict must be a stat"
+            kval_not_provided = []
+            for stat in self.stats:
+                if stat not in k:
+                    print(f"No k value provided for {stat}, using average of other kvalues...")
+                    kval_not_provided.append(stat)
+            self.k = k
+            for stat in kval_not_provided:
+                self.k[stat] = np.mean(self.k.values())
+                
+        elif ((isinstance(k, int))|(isinstance(k, float))):
+            self.k = {}
+            for stat in self.stats:
+                self.k[stat] = k
+        else:
+            raise ValueError("K values must either be a numeric (to assign to all stats) or a dict (where keys are stat names, values to be applied individually)")
+        
         if data is None:
             self.data['k'] = self.data['stat'].map(self.k).copy()
             assert(len(self.data.loc[self.data.k.isnull()])==0), f"{self.data.loc[self.data.k.is_null()].stat.unique()} do not have a k factor specified in the k factor dict"
@@ -671,5 +671,65 @@ class Elo():
         upcoming_matches['pred'] = upcoming_matches['prob'].apply(lambda x: 1 if x > 0.5 else 0)
 
         return upcoming_matches
+    
+
+
+
+class UncertainElo():
+
+    """
+
+    UncertainElo class for calculating Elo ratings with uncertainty
+
+    Parameters
+    ----------
+    data : pandas dataframe
+        Dataframe containing the following columns:
+            - protag_id: id of protagonist (player or team)
+            - antag_id: id of antagonist (player or team)
+            - stat: name of stat
+            - result: 0 for loss, 1 for win, 0.5 for tie
+            - is_home (optional): 1 for home, -1 for away, 0 for neutral
+            - date: date of game
+            - rating_period (if no date): rating period of game 
+    k : int, float, or dict
+        Elo k value(s) to use for each stat. If int or float, applies to all stats. If dict, keys must be stat names, values are k values for each stat
+    time_param : float, optional
+        Time parameter to use for each stat. The default is 0.1.
+    hfa : int, float, or dict
+        Home field advantage value(s) to use for each stat. If int or float, applies to all stats. If dict, keys must be stat names, values are hfa values for each stat
+    protag_id : str, optional
+        Name of protagonist id column in data. The default is 'team_name'.
+    antag_id : str, optional
+        Name of antagonist id column in data. The default is 'opp_name'.
+    result_col : str, optional
+        Name of result column in data. The default is 'result'.
+    priors : dict, optional
+        Dictionary of prior ratings to use for each stat. Keys are protag_ids, values are dicts of stat:rating pairs. The default is None.      
+    
+    """
+
+    def __init__(self, data, protag_id, antag_id, result_col, k=None, time_param=0.1, hfa=None, priors=None):
+        
+        self.data = data.copy()
+        self.protag_id = protag_id
+        self.antag_id = antag_id
+        self.result_col = result_col
+        self.k = k
+        self.time_param = time_param
+        self.hfa = hfa
+        self.priors = priors
+
+        ### validation checks
+        assert(self.protag_id in list(data)), f"{self.protag_id} not in columns, please specify team column name with protag_id argument"
+        assert(self.antag_id in list(data)), f"{self.antag_id} not in columns, please specify opponent column name with antag_id argument"
+
+        assert('stat' in list(self.data)), 'No stat column, please add a stat name column to your data'
+        self.stats = sorted(list(self.data.stat.unique()))
+        self.result_col = result_col
+        assert(self.result_col in list(self.data)), 'Please include an outcome/result column, can specify the name with result col argument'
+        self.priors = priors
+
+        pass
     
     
