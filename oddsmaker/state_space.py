@@ -14,7 +14,7 @@ class Elo():
     
     """
     
-    Implements classic Elo algorithm for a single stat or multiple stats simultaneously
+    Implements classic Elo algorithm to estimate player/team skill for a single stat or multiple stats simultaneously
 
     Parameters
     ----------
