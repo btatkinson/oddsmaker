@@ -712,8 +712,8 @@ class Glicko():
     def __init__(
             self, 
             data, 
-            protag_id='team_name', 
-            antag_id='opp_name', 
+            protag_id='protag_id', 
+            antag_id='antag_id', 
             result_col='result', 
             RD=350, 
             max_RD=350, 
@@ -835,6 +835,7 @@ class Glicko():
         """
 
         if self.hfa is None:
+            self.has_hfa=False
             return
         
         if ((new_data == True)&('hfa' not in list(self.data))):
@@ -879,29 +880,36 @@ class Glicko():
         temp_df = pd.DataFrame({
             'pid':pids, 
             'stat':sids,
+            'mus':protag_mus,
+            'rds':protag_RDs,
             'g_opps':g_opps,
             'exp_res':exp_res,
             'result':rp[self.result_col].values
         })
-        
-        d_sq = temp_df.groupby(['pid','stat']).apply(lambda x: self._d_sq_calc(x)).reset_index()
-        ids = d_sq[['pid','stat']].values
+
+        d_sq = temp_df.groupby(['pid','stat']).apply(lambda x: self._d_sq_calc(x)).reset_index().sort_values(by=['pid','stat']).reset_index(drop=True)
+        ids = d_sq[['pid','stat']].copy()
         d_sq = d_sq[0].values
 
         # np.sum([g_opps[i]*(results[i]-exp_results[i]) for i in range(self.num_opps)])
-        mu_adj_term = temp_df.groupby(['pid','stat']).apply(lambda x: self._mu_adj_calc(x)).reset_index()
+        mu_adj_term = temp_df.groupby(['pid','stat']).apply(lambda x: self._mu_adj_calc(x)).reset_index().sort_values(by=['pid','stat']).reset_index(drop=True)
         mu_adj_term = mu_adj_term[0].values
+        
+        single_data = temp_df.drop_duplicates(subset=['pid','stat'])[['pid','stat','mus','rds']].sort_values(by=['pid','stat'])[['mus','rds']].reset_index(drop=True)
+        single_data = pd.concat([ids, single_data], axis=1)
+        single_protag_mus = single_data['mus'].values
+        single_protag_RDs = single_data['rds'].values
 
-        new_protag_mus = protag_mus + self.q/(1/(protag_RDs**2) + 1/d_sq)*mu_adj_term
-        new_protag_RDs = np.sqrt(1/(1/(protag_RDs**2) + 1/d_sq))
+        new_protag_mus = single_protag_mus + self.q/(1/(single_protag_RDs**2) + 1/d_sq)*mu_adj_term
+        new_protag_RDs = np.sqrt(1/(1/(single_protag_RDs**2) + 1/d_sq))
 
-        postgame_protag_ratings = np.zeros(pregame_protag_ratings.shape)
+        postgame_protag_ratings = np.zeros(ids.shape)
         postgame_protag_ratings[:,0] = new_protag_mus
         postgame_protag_ratings[:,1] = new_protag_RDs
 
-        return postgame_protag_ratings
+        return postgame_protag_ratings, ids
 
-    def create_pregame_ratings(self):
+    def create_pregame_ratings(self, new_data=None):
 
         """
         Runs through all games in history and creates pregame ratings
@@ -909,7 +917,13 @@ class Glicko():
 
         self.data = self.data.sort_values(by=[self.period_type,'stat']).reset_index(drop=True)
 
-        quick_iterator = self.data.groupby([self.period_type,'stat'])
+        if new_data is None:
+            self.pregame_ratings = []
+            quick_iterator = self.data.groupby([self.period_type,'stat'])
+
+        else:
+            raise NotImplementedError("Not yet implemented")
+
         for rp_index, rating_period in tqdm(quick_iterator, total=len(quick_iterator)):
 
             pregame_protag_ratings = self.rating_matrix[rating_period.protag_idx.values, rating_period.stat_idx.values, :]
@@ -919,13 +933,19 @@ class Glicko():
                 pregame_protag_ratings = pregame_protag_ratings+((rating_period.hfa.values*rating_period.is_home.values)/2)
                 pregame_antag_ratings = pregame_antag_ratings-((rating_period.hfa.values*rating_period.is_home.values)/2)
 
-            postgame_protag_ratings = self._rating_period_update(pregame_protag_ratings, pregame_antag_ratings, rating_period.copy())
+            postgame_protag_ratings, rp_df = self._rating_period_update(pregame_protag_ratings, pregame_antag_ratings, rating_period.copy())
 
             if self.has_hfa:
                 postgame_protag_ratings = pregame_protag_ratings-((rating_period.hfa.values*rating_period.is_home.values)/2)
+            
+            rp_df['rating'] = postgame_protag_ratings[:,0]
+            rp_df['RD'] = postgame_protag_ratings[:,1]
 
+            self.pregame_ratings.append(rp_df)
 
-        return
+        self.pregame_ratings = pd.concat(self.pregame_ratings, axis=0).reset_index(drop=True)
+
+        return self.pregame_ratings
         
 
     

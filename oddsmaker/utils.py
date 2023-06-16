@@ -9,6 +9,16 @@ import pandas as pd
 
 from copy import copy
 
+def make_symmetrical(df, protag_id='protag_id', antag_id='antag_id'):
+    
+    antag_df = df.copy()
+    antag_df['result'] = 1-antag_df['result'].copy()
+    antag_df = antag_df.rename(columns={protag_id:antag_id, antag_id:protag_id})
+    
+    df = pd.concat([df, antag_df], axis=0).reset_index(drop=True)
+    
+    return df
+
 def create_fake_Elo_ratings(num_players, mean=1500, std_dev=100):
 
     """Create fake Elo ratings for a given number of players."""
