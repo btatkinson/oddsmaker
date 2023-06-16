@@ -16,10 +16,16 @@ from pandas.api.types import is_datetime64_any_dtype as is_datetime
 
 
 
+
 class RidgeRating():
 
     """
     Implements ranking system that uses ridge regression to estimate mean player/team ratings.
+    Can work for 1v1,1vMany,Manyv1,ManyvMany games.
+    Can use either a date or rating period to decay ratings.
+    Can use a custom decay function.
+    Can use a custom prior rating for each player/team.
+    Can use a custom home field advantage.
 
         Parameters
     ----------
@@ -44,12 +50,24 @@ class RidgeRating():
         Name of antagonist id column in data. The default is 'opp_name'.
     result_col : str, optional
         Name of result column in data. The default is 'result'.
+    matchup_type : str, optional
+        Type of matchup. Either '1v1', '1vMany', or 'ManyvMany'. The default is '1v1'.
     priors : dict, optional
         Dictionary of prior ratings to use for each stat. Keys are protag_ids, values are dicts of stat:rating pairs. The default is None.  
     
     """
 
-    def __init__(self, data, alpha, decay_type, decay_function, protag_id='player_a', antag_id='player_b', result_col='result', priors=None):
+    def __init__(
+            self, 
+            data, 
+            alpha, 
+            decay_type, 
+            decay_function, 
+            protag_id='player_a', 
+            antag_id='player_b', 
+            result_col='result', 
+            matchup_type='1v1', 
+            priors=None):
 
         data.columns=[x.lower().strip() for x in data.columns]
 
@@ -75,6 +93,8 @@ class RidgeRating():
         assert(isinstance(self.antag_id, str)), "antag_id is not a string"
         self.result_col = result_col
         assert(isinstance(self.result_col, str)), "result_col is not a string"
+        self.matchup_type = matchup_type
+        assert(matchup_type in ['1v1','1vMany','ManyvMany']), "matchup_type is not '1v1', '1vMany', or 'ManyvMany'"
         self.priors = priors
         assert(isinstance(self.priors, dict) or self.priors is None), "priors is not a dict or None"
 
@@ -111,44 +131,8 @@ class RidgeRating():
 
         return
     
-    def date_history(self):
 
-        unique_periods = self.data.date.unique()
-
-        pregame_ratings = []
-        for unique_period in tqdm(unique_periods):
-            prev_history = self.data[self.data.date<unique_date].copy()
-            team_ohe = OneHotEncoder()
-            opp_ohe = OneHotEncoder()
-            team_ohe.fit(prev_history[self.protag_id].values.reshape(-1,1))
-            opp_ohe.fit(prev_history[self.antag_id].values.reshape(-1,1))
-            team_one_hot = team_ohe.transform(prev_history[self.protag_id].values.reshape(-1,1)).toarray()
-            opp_one_hot = opp_ohe.transform(prev_history[self.antag_id].values.reshape(-1,1)).toarray()
-            if 'hfa' not in prev_history.columns:
-                is_home = prev_history['is_home'].values.reshape(-1,1)
-            else:
-                is_home = prev_history['hfa'].values.reshape(-1,1)
-
-            X = np.concatenate([team_one_hot, opp_one_hot, is_home], axis=1)
-            y = prev_history[self.result_col].values.reshape(-1,1)
-            ridge = RidgeRegression(alpha=self.alpha)
-            ridge.fit(X,y)
-
-            protag_names = team_ohe.get_feature_names()
-            antag_names = opp_ohe.get_feature_names()
-            protag_map = {pn:ridge.coef_[0][i] for i,pn in enumerate(protag_names)}
-            antag_map = {an:ridge.coef_[0][len(protag_names)+i] for i,an in enumerate(antag_names)}
-
-            to_append = self.data[['protag_id','antag_id','is_home','result','stat','date']][self.data.date==unique_date].copy()
-            to_append['protag_rating'] = to_append['protag_id'].apply(lambda x: protag_map.get(x))
-            to_append['antag_rating'] = to_append['antag_id'].apply(lambda x: antag_map.get(x))
-
-            pregame_ratings.append(to_append)
-        
-        pregame_ratings = pd.concat(pregame_ratings, axis=0)
-        pregame_ratings = pregame_ratings.sort_values(by=['date',self.protag_id]).reset_index(drop=True)
-
-        return pregame_ratings
+    
     
     def run_history(self):
 
@@ -194,7 +178,7 @@ class RidgeRating():
 
             to_append = self.data[[self.protag_id,self.antag_id,'is_home',self.result_col,'stat',self.period_col]][self.data[self.period_col]==unique_period].copy()
             to_append['protag_rating'] = to_append[self.protag_id].apply(lambda x: protag_map.get(x))
-            to_append['antag_rating'] = to_append[self.antag_id].apply(lambda x: antag_map.get(x))
+            to_append['antag_rating'] = -1*to_append[self.antag_id].apply(lambda x: antag_map.get(x))
 
             pregame_ratings.append(to_append)
         
@@ -206,6 +190,8 @@ class RidgeRating():
     def update(self):
 
         return
+
+
 
 
 
