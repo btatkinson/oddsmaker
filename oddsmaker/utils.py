@@ -52,8 +52,6 @@ def create_Elo_random_walk(player_rating_dict, num_rounds=250, step_size=5, stat
         for player in names:
             nudge = step_size*2*(np.random.random()-0.5)
             rtg  = player_rating_dict[player]
-            
-            
             rtg = np.max([1, rtg+nudge])
             player_rating_dict[player] = rtg
             
