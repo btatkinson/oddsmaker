@@ -15,151 +15,160 @@ class Optimizer:
         raise NotImplementedError("Subclasses must implement the optimize method.")
 
 
-class MasseyOptimizer(Optimizer):
-    def __init__(self, decay_type, home_field=False):
-        super().__init__()
-        assert(decay_type in ['time', 'games', 'n_days','n_games', 'both'])
+
+class MasseyOptimizer:
+    def __init__(self, decay_type, protag_col='team', antag_col='opponent', stat_col='team_sq_score', meta_cols=['location'], min_protag_games=5):
         self.decay_type = decay_type
-        self.home_field = home_field
-        self.data = None
+        self.protag_col = protag_col
+        self.antag_col = antag_col
+        self.stat_col = stat_col
+        self.meta_cols = meta_cols
+        self.min_protag_games = min_protag_games
 
-    def load_data(self, data):
-        self.data = data
-        self.preprocess_data()
+        if decay_type not in ['time', 'games', 'both']:
+            raise ValueError("decay_type must be 'time', 'games', or 'both'")
 
-    def preprocess_data(self):
-        # Convert date column to datetime if needed
-        if isinstance(self.data['date'].iloc[0], str):
-            self.data['date'] = pd.to_datetime(self.data['date'])
-
-    def calculate_ratings(self, train_data, weights, l2):
-
-        # Prepare input data
-        if 'stat_1' in train_data.columns:
-            X = torch.tensor(train_data[['team_1', 'team_2', 'meta_variable']].values, dtype=torch.float32)
-            y = torch.tensor(train_data['stat_1'].values - train_data['stat_2'].values, dtype=torch.float32)
+    def load_data(self, data=None, path=None):
+        if path:
+            self.data = pd.read_csv(path)
+        elif data is not None:
+            self.data = data.copy()
         else:
-            X = torch.tensor(train_data[['team_1', 'team_2', 'meta_variable']].values, dtype=torch.float32)
-            y = torch.tensor(train_data['stat'].values, dtype=torch.float32)
+            raise ValueError("Either data or path must be provided")
+        self._preprocess_data()
 
-        # Solve the linear system with L2 regularization
-        coefficients = torch.linalg.solve(X.T @ (X * weights.view(-1, 1)) + l2 * torch.eye(X.shape[1]), X.T @ (y * weights))
+    def _preprocess_data(self):
+        required_columns = [self.protag_col, self.antag_col, self.stat_col, 'date']
+        if not all(col in self.data.columns for col in required_columns):
+            raise ValueError(f"Data must contain columns: {required_columns}")
 
-        return coefficients
+        self.data['date'] = pd.to_datetime(self.data['date'])
+        self.data = self.data.sort_values('date').reset_index(drop=True)
 
-    def calculate_time_weights(self, decay_factor, days_ago):
-        return torch.exp(-decay_factor * days_ago)
-    
-    def time_optimize(self, num_test_dates=20, min_weight=0.01, num_future_days=60, decay_bounds=(0.001, 1.0), l2_bounds=(0.01, 100)):
+        self.protags = sorted(self.data[self.protag_col].unique())
+        self.antags = sorted(self.data[self.antag_col].unique())
 
-        # Select random test dates
-        unique_dates = self.data['date'].unique()
+        protag_map = {p: i for i, p in enumerate(self.protags)}
+        antag_map = {a: i for i, a in enumerate(self.antags)}
+
+        self.data['protag_idx'] = self.data[self.protag_col].map(protag_map)
+        self.data['antag_idx'] = self.data[self.antag_col].map(antag_map)
+
+        if len(self.data) <= 200:
+            raise ValueError("Not enough data to optimize (minimum 200 rows)")
+
+    def _initialize_X(self, df, protags, antags):
+        df = df.copy()  # Create a copy to avoid SettingWithCopyWarning
+        num_protags = len(protags)
+        num_antags = len(antags)
+        
+        protag_map = {p: i for i, p in enumerate(protags)}
+        antag_map = {a: i for i, a in enumerate(antags)}
+        
+        df.loc[:, 'protag_idx'] = df[self.protag_col].map(protag_map).fillna(-1).astype(int)
+        df.loc[:, 'antag_idx'] = df[self.antag_col].map(antag_map).fillna(-1).astype(int)
+        
+        X = sparse.lil_matrix((len(df), num_protags + num_antags + len(self.meta_cols)))
+        valid_rows = (df['protag_idx'] != -1) & (df['antag_idx'] != -1)
+        X[valid_rows, df.loc[valid_rows, 'protag_idx']] = 1
+        X[valid_rows, df.loc[valid_rows, 'antag_idx'] + num_protags] = 1
+        
+        for i, col in enumerate(self.meta_cols):
+            X[:, -(i+1)] = df[col].values.reshape(-1, 1)
+        
+        return sparse.csr_matrix(X), df[valid_rows]
+
+    def _calculate_weights(self, train_data, test_date, halflife):
+        decay = np.exp(-np.log(2) / halflife)
+        time_diff = (test_date - train_data['date']).dt.total_seconds() / (24 * 3600)
+        weights = decay ** time_diff
+        return weights.values
+
+    def _fit_model(self, X_train, y_train, weights, l2):
+        W = sparse.diags(weights)
+        q = (X_train.T @ W @ X_train).toarray()
+        q += l2 * np.eye(q.shape[0]) * np.trace(q) / q.shape[0]
+        f = X_train.T @ W @ y_train
+        return solve(q, f, assume_a='pos')
+
+    def _predict_and_evaluate(self, X_test, y_test, coeffs, num_protags, num_antags):
+        offense_ratings = coeffs[:num_protags]
+        defense_ratings = coeffs[num_protags:num_protags+num_antags]
+        
+        X_test_ratings = np.column_stack([
+            offense_ratings[X_test[:, :num_protags].nonzero()[1]],
+            defense_ratings[X_test[:, num_protags:num_protags+num_antags].nonzero()[1] - num_protags]
+        ])
+        
+        linear_model = LinearRegression()
+        predictions = cross_val_predict(linear_model, X_test_ratings, y_test, cv=5)
+        mse = np.mean((y_test - predictions) ** 2)
+        return mse
+
+    def optimize(self, init_points=10, n_iter=30, num_test_dates=20, num_future_days=60, max_lookback=365*3, halflife_bounds=(10, 800), l2_bounds=(1e-9, 10)):
+        unique_dates = sorted(self.data['date'].unique())[10:]
         test_dates = np.random.choice(unique_dates, size=num_test_dates, replace=False)
 
-        def objective(params):
-            decay_factor, l2 = params
-            correlations = []
-
+        def objective(halflife, l2):
+            total_mse = 0
             for test_date in test_dates:
-                # Filter data before the test date
-                train_data = self.data[self.data['date'] < test_date]
+                train_data = self.data[(self.data['date'] >= test_date - pd.Timedelta(days=max_lookback)) & (self.data['date'] < test_date)].copy()
+                test_data = self.data[(self.data['date'] >= test_date) & (self.data['date'] <= test_date + pd.Timedelta(days=num_future_days))].copy()
 
-                # Calculate days_ago for each game
-                days_ago = (test_date - train_data['date']).dt.days
-                weights = self.calculate_weights(decay_factor, torch.tensor(days_ago.values, dtype=torch.float32))
+                if len(train_data) < 50 or len(test_data) < 50:
+                    continue
 
-                # Filter games with weights greater than min_weight
-                train_data = train_data[weights > min_weight]
-                weights = weights[weights > min_weight]
+                X_train, train_data = self._initialize_X(train_data, self.protags, self.antags)
+                X_test, test_data = self._initialize_X(test_data, self.protags, self.antags)
 
-                coefficients = self.calculate_ratings(train_data, weights, l2)
+                weights = self._calculate_weights(train_data, test_date, halflife)
+                coeffs = self._fit_model(X_train, train_data[self.stat_col].values, weights, l2)
 
-                # Filter future data and calculate predicted values
-                future_data = self.data[(self.data['date'] >= test_date) & (self.data['date'] < test_date + pd.Timedelta(days=num_future_days))]
-                if 'stat_1' in future_data.columns:
-                    future_X = torch.tensor(future_data[['team_1', 'team_2', 'meta_variable']].values, dtype=torch.float32)
-                    future_y_true = torch.tensor(future_data['stat_1'].values - future_data['stat_2'].values, dtype=torch.float32)
-                else:
-                    future_X = torch.tensor(future_data[['team_1', 'team_2', 'meta_variable']].values, dtype=torch.float32)
-                    future_y_true = torch.tensor(future_data['stat'].values, dtype=torch.float32)
+                mse = self._predict_and_evaluate(X_test, test_data[self.stat_col].values, coeffs, len(self.protags), len(self.antags))
+                total_mse += mse
 
-                future_y_pred = future_X @ coefficients
+            return -total_mse / len(test_dates)
 
-                correlation = np.corrcoef(future_y_true.numpy(), future_y_pred.numpy())[0, 1]
-                correlations.append(correlation)
+        optimizer = BayesianOptimization(f=objective, pbounds={'halflife': halflife_bounds, 'l2': l2_bounds}, random_state=17)
+        optimizer.maximize(init_points=init_points, n_iter=n_iter)
 
-            avg_correlation = np.mean(correlations)
-            return -avg_correlation  # Minimize the negative of the average correlation
+        best_params = optimizer.max['params']
+        best_mse = -optimizer.max['target']
+        return best_params['halflife'], best_params['l2'], best_mse
 
-        # Define the bounds for decay factor and L2 regularization
-        bounds = [decay_bounds, l2_bounds]
+    def get_ratings_for_dates(self, dates, halflife, l2, max_lookback=365*2.1):
+        offense_stats = []
+        defense_stats = []
 
-        # Perform the optimization
-        result = minimize(objective, x0=[0.1, 1], bounds=bounds)
+        for date in tqdm(dates):
+            date = pd.to_datetime(date)
+            train_data = self.data[(self.data['date'] >= date - pd.Timedelta(days=max_lookback)) & (self.data['date'] < date)].copy()
+            
+            if len(train_data) < 50:
+                print(f"Minimum data threshold not met for date {date}")
+                continue
 
-        best_decay_factor, best_l2 = result.x
-        best_correlation = -result.fun
+            X_train, train_data = self._initialize_X(train_data, self.protags, self.antags)
+            weights = self._calculate_weights(train_data, date, halflife)
+            coeffs = self._fit_model(X_train, train_data[self.stat_col].values, weights, l2)
 
-        return best_decay_factor, best_l2, best_correlation
+            num_protags = len(self.protags)
+            num_antags = len(self.antags)
+            
+            offense_ratings = coeffs[:num_protags]
+            defense_ratings = coeffs[num_protags:num_protags+num_antags]
+            meta_ratings = coeffs[num_protags+num_antags:]
 
-    def optimize(self, num_test_dates=20, min_weight=0.01, num_future_days=60):
-        if self.decay_type != 'time':
-            raise NotImplementedError("Only time decay is currently supported.")
+            offense_stats.append(pd.DataFrame({
+                'protag': self.protags,
+                self.stat_col: offense_ratings,
+                'date': date
+            }))
 
-        # Select random test dates
-        unique_dates = self.data['date'].unique()
-        test_dates = np.random.choice(unique_dates, size=num_test_dates, replace=False)
+            defense_stats.append(pd.DataFrame({
+                'antag': self.antags,
+                self.stat_col: defense_ratings,
+                'date': date
+            }))
 
-        best_decay_factor = None
-        best_l2 = None
-        best_correlation = -1
-
-        for decay_factor in [0.01, 0.05, 0.1, 0.2, 0.5]:
-            for l2 in [0.1, 1, 10, 100]:
-                correlations = []
-
-                for test_date in test_dates:
-                    # Filter data before the test date
-                    train_data = self.data[self.data['date'] < test_date]
-
-                    # Calculate days_ago for each game
-                    days_ago = (test_date - train_data['date']).dt.days
-                    weights = self.calculate_weights(decay_factor, torch.tensor(days_ago.values, dtype=torch.float32))
-
-                    # Filter games with weights greater than min_weight
-                    train_data = train_data[weights > min_weight]
-                    weights = weights[weights > min_weight]
-
-                    # Prepare input data
-                    if 'stat_1' in train_data.columns:
-                        X = torch.tensor(train_data[['team_1', 'team_2', 'meta_variable']].values, dtype=torch.float32)
-                        y = torch.tensor(train_data['stat_1'].values - train_data['stat_2'].values, dtype=torch.float32)
-                    else:
-                        X = torch.tensor(train_data[['team_1', 'team_2', 'meta_variable']].values, dtype=torch.float32)
-                        y = torch.tensor(train_data['stat'].values, dtype=torch.float32)
-
-                    # Solve the linear system with L2 regularization
-                    coefficients = torch.linalg.solve(X.T @ (X * weights.view(-1, 1)) + l2 * torch.eye(X.shape[1]), X.T @ (y * weights))
-
-                    # Filter future data and calculate predicted values
-                    future_data = self.data[(self.data['date'] >= test_date) & (self.data['date'] < test_date + pd.Timedelta(days=num_future_days))]
-                    if 'stat_1' in future_data.columns:
-                        future_X = torch.tensor(future_data[['team_1', 'team_2', 'meta_variable']].values, dtype=torch.float32)
-                        future_y_true = torch.tensor(future_data['stat_1'].values - future_data['stat_2'].values, dtype=torch.float32)
-                    else:
-                        future_X = torch.tensor(future_data[['team_1', 'team_2', 'meta_variable']].values, dtype=torch.float32)
-                        future_y_true = torch.tensor(future_data['stat'].values, dtype=torch.float32)
-
-                    future_y_pred = future_X @ coefficients
-
-                    # Calculate correlation coefficient
-                    correlation = np.corrcoef(future_y_true.numpy(), future_y_pred.numpy())[0, 1]
-                    correlations.append(correlation)
-
-                avg_correlation = np.mean(correlations)
-                if avg_correlation > best_correlation:
-                    best_decay_factor = decay_factor
-                    best_l2 = l2
-                    best_correlation = avg_correlation
-
-        return best_decay_factor, best_l2, best_correlation
+        return pd.concat(offense_stats), pd.concat(defense_stats)
